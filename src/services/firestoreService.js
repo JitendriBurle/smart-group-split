@@ -1,154 +1,282 @@
-import {
-  collection,
-  addDoc,
-  getDocs,
-  getDoc,
-  setDoc,
-  doc,
-  updateDoc,
-  deleteDoc,
-  writeBatch,
-  query,
-  where,
-  serverTimestamp,
-  onSnapshot
-} from 'firebase/firestore';
-import { db } from '../firebase';
-import { groupService, expenseService } from './api';
+import { supabase } from '../supabase';
 
 // ── GROUPS ──────────────────────────────────────────────────────────────────
-// Mutations go via the Express backend (auth-checked, business logic enforced).
-// Real-time reads stay on the Firestore SDK directly (IndexedDB cache + live push).
-
 export const groupsService = {
   create: async ({ name, description, memberEmails, userEmail, userId }) => {
-    const allMembers = Array.from(new Set([...(memberEmails || []), userEmail]));
-    const docRef = await addDoc(collection(db, 'groups'), {
-      name,
-      description: description || '',
-      members: allMembers,
-      createdBy: userId,
-      creatorEmail: userEmail,
-      createdAt: serverTimestamp(),
-    });
-    return { id: docRef.id, name, members: allMembers };
+    const allEmails = Array.from(new Set([...(memberEmails || []), userEmail]));
+    
+    // 1. Create Group
+    const { data: group, error } = await supabase
+      .from('groups')
+      .insert({
+        name,
+        description: description || '',
+        created_by: userId,
+        creator_email: userEmail
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    // 2. Add Members
+    const membersToInsert = allEmails.map(email => ({
+      group_id: group.id,
+      email
+    }));
+    await supabase.from('group_members').insert(membersToInsert);
+
+    return group;
   },
 
   createWithId: async (id, { name, description, memberEmails, userEmail, userId }) => {
-    const allMembers = Array.from(new Set([...(memberEmails || []), userEmail]));
-    await setDoc(doc(db, 'groups', id), {
-      name,
-      description: description || '',
-      members: allMembers,
-      createdBy: userId,
-      creatorEmail: userEmail,
-      createdAt: serverTimestamp(),
-    });
-    return { id, name, members: allMembers };
+    // Note: In Supabase, we usually let DB generate ID, but if we need optimistic:
+    const allEmails = Array.from(new Set([...(memberEmails || []), userEmail]));
+    const { data: group, error } = await supabase
+      .from('groups')
+      .insert({
+        id,
+        name,
+        description: description || '',
+        created_by: userId,
+        creator_email: userEmail
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    const membersToInsert = allEmails.map(email => ({
+      group_id: group.id,
+      email
+    }));
+    await supabase.from('group_members').insert(membersToInsert);
+
+    return group;
   },
 
   getById: async (id) => {
-    const snap = await getDoc(doc(db, 'groups', id));
-    if (!snap.exists()) throw new Error('Group not found');
-    return { id: snap.id, ...snap.data() };
+    const { data: group, error } = await supabase
+      .from('groups')
+      .select('*, group_members(email)')
+      .eq('id', id)
+      .single();
+    
+    if (error) throw error;
+    // Format to match old structure
+    return { 
+      ...group, 
+      members: group.group_members.map(m => m.email),
+      createdBy: group.created_by,
+      creatorEmail: group.creator_email
+    };
   },
 
   subscribeAll: (userEmail, onData, onError) => {
-    const q = query(
-      collection(db, 'groups'),
-      where('members', 'array-contains', userEmail)
-    );
-    return onSnapshot(q, (snap) => {
-      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      onData(data);
-    }, onError);
+    // Complex queries in real-time are hard in Supabase, 
+    // so we listen to changes and re-fetch if needed
+    const channel = supabase
+      .channel('groups_all')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'group_members', filter: `email=eq.${userEmail}` }, async () => {
+         const { data: membership } = await supabase.from('group_members').select('group_id').eq('email', userEmail);
+         const groupIds = membership?.map(m => m.group_id) || [];
+         if (groupIds.length === 0) {
+           onData([]);
+           return;
+         }
+         const { data } = await supabase.from('groups').select('*, group_members(email)').in('id', groupIds);
+         const formattedData = (data || []).map(group => ({
+           ...group,
+           members: group.group_members?.map(m => m.email) || [],
+           createdBy: group.created_by,
+           creatorEmail: group.creator_email
+         }));
+         onData(formattedData);
+      })
+      .subscribe();
+
+    // Initial fetch
+    supabase.from('group_members').select('group_id').eq('email', userEmail)
+      .then(async ({ data: membership }) => {
+        const groupIds = membership?.map(m => m.group_id) || [];
+        if (groupIds.length === 0) return onData([]);
+        const { data } = await supabase.from('groups').select('*, group_members(email)').in('id', groupIds);
+        const formattedData = (data || []).map(group => ({
+          ...group,
+          members: group.group_members?.map(m => m.email) || [],
+          createdBy: group.created_by,
+          creatorEmail: group.creator_email
+        }));
+        onData(formattedData);
+      });
+
+    return () => supabase.removeChannel(channel);
   },
 
-  subscribeOne: (id, onData, onError) =>
-    onSnapshot(doc(db, 'groups', id), (snap) => {
-      if (!snap.exists()) { onError(new Error('Group not found')); return; }
-      onData({ id: snap.id, ...snap.data() });
-    }, onError),
+  subscribeOne: (id, onData, onError) => {
+    const channel = supabase
+      .channel(`group_${id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'groups', filter: `id=eq.${id}` }, async () => {
+         const d = await groupsService.getById(id);
+         onData(d);
+      })
+      .subscribe();
+
+    // Initial
+    groupsService.getById(id).then(onData).catch(onError);
+
+    return () => supabase.removeChannel(channel);
+  },
 
   update: async (id, { name, description, memberEmails, creatorEmail }) => {
-    const allMembers = Array.from(new Set([...(memberEmails || []), creatorEmail]));
-    await updateDoc(doc(db, 'groups', id), {
-      name,
-      description,
-      members: allMembers,
-      updatedAt: serverTimestamp(),
-    });
-    return { id, name, members: allMembers };
+    const { data, error } = await supabase
+      .from('groups')
+      .update({ name, description })
+      .eq('id', id)
+      .select()
+      .single();
+    
+    if (error) throw error;
+
+    if (memberEmails) {
+      // Sync members (delete old, add new)
+      await supabase.from('group_members').delete().eq('group_id', id);
+      const allMembers = Array.from(new Set([...memberEmails, creatorEmail]));
+      await supabase.from('group_members').insert(allMembers.map(email => ({ group_id: id, email })));
+    }
+
+    return data;
   },
 
   delete: async (id) => {
-    // Delete expenses first (batch)
-    const q = query(collection(db, 'expenses'), where('groupId', '==', id));
-    const snap = await getDocs(q);
-    const batch = writeBatch(db);
-    snap.docs.forEach(d => batch.delete(d.ref));
-    batch.delete(doc(db, 'groups', id));
-    await batch.commit();
+    const { error } = await supabase.from('groups').delete().eq('id', id);
+    if (error) throw error;
   },
 };
 
+// ── EXPENSES ─────────────────────────────────────────────────────────────────
 export const expensesService = {
-  add: async ({ description, amount, groupId, paidBy, splitBetween, category, customAmounts }) => {
-    const expenseData = {
-      description,
-      amount: parseFloat(amount),
-      groupId,
-      paidBy,
-      splitBetween,
-      createdAt: serverTimestamp(),
-      ...(category ? { category } : {}),
-      ...(customAmounts && Object.keys(customAmounts).length > 0 ? { customAmounts } : {}),
-    };
-    const docRef = await addDoc(collection(db, 'expenses'), expenseData);
-    return { id: docRef.id, ...expenseData };
+  add: async (payload) => {
+    const { description, amount, groupId, paidBy, category, customAmounts } = payload;
+    
+    const { data: expense, error } = await supabase
+      .from('expenses')
+      .insert({
+        group_id: groupId,
+        description,
+        amount,
+        paid_by: paidBy,
+        category: category || 'Other'
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    // Add splits
+    const splits = (payload.splitBetween || []).map(email => ({
+      expense_id: expense.id,
+      email,
+      amount: customAmounts ? customAmounts[email] : null
+    }));
+
+    if (splits.length > 0) {
+      await supabase.from('expense_splits').insert(splits);
+    }
+
+    return expense;
   },
 
-  addWithId: async (id, data) => {
-    const expenseData = {
-      ...data,
-      amount: parseFloat(data.amount),
-      createdAt: serverTimestamp(),
-    };
-    await setDoc(doc(db, 'expenses', id), expenseData);
-    return { id, ...expenseData };
+  addWithId: async (id, payload) => {
+    const { description, amount, groupId, paidBy, category, customAmounts } = payload;
+    const { data: expense, error } = await supabase
+      .from('expenses')
+      .insert({
+        id,
+        group_id: groupId,
+        description,
+        amount,
+        paid_by: paidBy,
+        category: category || 'Other'
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    const splits = (payload.splitBetween || []).map(email => ({
+      expense_id: id,
+      email,
+      amount: customAmounts ? customAmounts[email] : null
+    }));
+
+    if (splits.length > 0) {
+      await supabase.from('expense_splits').insert(splits);
+    }
+
+    return expense;
+
   },
 
   getByGroup: async (groupId) => {
-    const q = query(collection(db, 'expenses'), where('groupId', '==', groupId));
-    const snap = await getDocs(q);
-    const expenses = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    return expenses.sort((a, b) => {
-      const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
-      const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
-      return dateB - dateA;
-    });
+    const { data, error } = await supabase
+      .from('expenses')
+      .select('*, expense_splits(*)')
+      .eq('group_id', groupId)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    // Format to match old structure
+    return data.map(exp => ({
+      ...exp,
+      paidBy: exp.paid_by,
+      createdAt: exp.created_at,
+      splitBetween: exp.expense_splits.map(s => s.email),
+      customAmounts: exp.expense_splits.reduce((acc, s) => {
+        if (s.amount !== null) acc[s.email] = s.amount;
+        return acc;
+      }, {})
+    }));
   },
 
   update: async (id, payload) => {
-    const updates = {
-      ...payload,
-      updatedAt: serverTimestamp(),
-    };
-    await updateDoc(doc(db, 'expenses', id), updates);
-    return { id, ...updates };
+    const { description, amount, category, customAmounts, splitBetween } = payload;
+    const { data, error } = await supabase
+      .from('expenses')
+      .update({
+        ...(description ? { description } : {}),
+        ...(amount ? { amount } : {}),
+        ...(category ? { category } : {})
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    if (splitBetween) {
+       await supabase.from('expense_splits').delete().eq('expense_id', id);
+       const splits = splitBetween.map(email => ({
+         expense_id: id,
+         email,
+         amount: customAmounts ? customAmounts[email] : null
+       }));
+       await supabase.from('expense_splits').insert(splits);
+    }
+
+    return data;
   },
 
   delete: async (id) => {
-    await deleteDoc(doc(db, 'expenses', id));
+    await supabase.from('expenses').delete().eq('id', id);
   },
 };
 
 // ── BALANCES ──────────────────────────────────────────────────────────────────
-// Calculated client-side from the live onSnapshot data — zero extra Firestore reads.
-
+// Logic remains identical, but inputs are mapped correctly within getByGroup
 export const balancesService = {
   getBalances: async (groupId) => {
-    // Run both reads in parallel — cuts latency roughly in half vs serial awaits
     const [group, expenses] = await Promise.all([
       groupsService.getById(groupId),
       expensesService.getByGroup(groupId),
@@ -159,16 +287,15 @@ export const balancesService = {
 
     expenses.forEach(exp => {
       if (balanceMap[exp.paidBy] !== undefined) {
-        balanceMap[exp.paidBy] += exp.amount;
+        balanceMap[exp.paidBy] += parseFloat(exp.amount);
       }
       
-      if (exp.customAmounts && Object.keys(exp.customAmounts).length > 0) {
-        // Custom split: subtract specific amounts
+      const isCustom = exp.customAmounts && Object.keys(exp.customAmounts).length > 0;
+      if (isCustom) {
         Object.entries(exp.customAmounts).forEach(([email, amt]) => {
           if (balanceMap[email] !== undefined) balanceMap[email] -= parseFloat(amt) || 0;
         });
       } else {
-        // Equal split: subtract share
         const share = exp.amount / (exp.splitBetween?.length || 1);
         (exp.splitBetween || []).forEach(email => {
           if (balanceMap[email] !== undefined) balanceMap[email] -= share;
@@ -182,7 +309,6 @@ export const balancesService = {
       balance: Math.round(balanceMap[email] * 100) / 100,
     }));
 
-    // Greedy debt simplification
     const debtors   = userSummary.filter(u => u.balance < -0.01).map(u => ({ ...u, amount: Math.abs(u.balance) }));
     const creditors = userSummary.filter(u => u.balance >  0.01).map(u => ({ ...u, amount: u.balance }));
     const settlements = [];

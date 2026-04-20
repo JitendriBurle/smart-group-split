@@ -1,108 +1,93 @@
-import admin from 'firebase-admin';
+import { supabase } from '../config/supabase.js';
 
 export const addExpense = async (req, res) => {
   const { description, amount, groupId, paidBy, splitBetween, category, customAmounts } = req.body;
-  const db = admin.firestore();
 
   try {
-    const expenseData = {
-      description,
-      amount: parseFloat(amount),
-      groupId,
-      paidBy, // Email
-      splitBetween, // Array of Emails
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      ...(category     ? { category }     : {}),
-      ...(customAmounts && Object.keys(customAmounts).length > 0 ? { customAmounts } : {}),
-    };
+    const { data: expense, error } = await supabase
+      .from('expenses')
+      .insert({
+        group_id: groupId,
+        description,
+        amount,
+        paid_by: paidBy,
+        category: category || 'Other'
+      })
+      .select()
+      .single();
 
-    const docRef = await db.collection('expenses').add(expenseData);
-    
-    // Convert timestamp for immediate UI response
-    res.status(201).json({ id: docRef.id, ...expenseData, createdAt: new Date() });
+    if (error) throw error;
+
+    // Add splits
+    const splits = (splitBetween || []).map(email => ({
+      expense_id: expense.id,
+      email,
+      amount: customAmounts ? customAmounts[email] : null
+    }));
+
+    if (splits.length > 0) {
+      await supabase.from('expense_splits').insert(splits);
+    }
+
+    res.status(201).json(expense);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
 };
 
 export const getGroupExpenses = async (req, res) => {
-  const db = admin.firestore();
   try {
-    const snapshot = await db.collection('expenses')
-      .where('groupId', '==', req.params.groupId)
-      .orderBy('createdAt', 'desc')
-      .get();
+    const { data, error } = await supabase
+      .from('expenses')
+      .select('*, expense_splits(*)')
+      .eq('group_id', req.params.groupId)
+      .order('created_at', { ascending: false });
 
-    const expenses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    res.json(expenses);
+    if (error) throw error;
+    res.json(data);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
-// ── UPDATE EXPENSE ──────────────────────────────────────────────────────────
 export const updateExpense = async (req, res) => {
   const { id } = req.params;
-  const { description, amount, splitBetween, customAmounts } = req.body;
-  const db = admin.firestore();
+  const { description, amount, category, customAmounts, splitBetween } = req.body;
 
   try {
-    const expDoc = await db.collection('expenses').doc(id).get();
-    if (!expDoc.exists) return res.status(404).json({ error: 'Expense not found' });
+    const { data, error } = await supabase
+      .from('expenses')
+      .update({
+        ...(description ? { description } : {}),
+        ...(amount ? { amount } : {}),
+        ...(category ? { category } : {})
+      })
+      .eq('id', id)
+      .select()
+      .single();
 
-    const expData = expDoc.data();
+    if (error) throw error;
 
-    // Verify the requesting user is a member of the expense's group
-    const groupDoc = await db.collection('groups').doc(expData.groupId).get();
-    if (!groupDoc.exists || !groupDoc.data().members.includes(req.user.email)) {
-      return res.status(403).json({ error: 'Access denied' });
+    if (splitBetween) {
+       await supabase.from('expense_splits').delete().eq('expense_id', id);
+       const splits = splitBetween.map(email => ({
+         expense_id: id,
+         email,
+         amount: customAmounts ? customAmounts[email] : null
+       }));
+       await supabase.from('expense_splits').insert(splits);
     }
 
-    // Only the payer can edit the expense
-    if (expData.paidBy !== req.user.email) {
-      return res.status(403).json({ error: 'Only the expense payer can edit it' });
-    }
-
-    const updates = {};
-    if (description !== undefined) updates.description = description;
-    if (amount !== undefined) updates.amount = parseFloat(amount);
-    if (splitBetween !== undefined) updates.splitBetween = splitBetween;
-    if (customAmounts !== undefined) updates.customAmounts = customAmounts;
-    updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
-
-    await db.collection('expenses').doc(id).update(updates);
-    res.json({ id, ...expData, ...updates });
+    res.json(data);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
-// ── DELETE EXPENSE ──────────────────────────────────────────────────────────
 export const deleteExpense = async (req, res) => {
-  const { id } = req.params;
-  const db = admin.firestore();
-
   try {
-    const expDoc = await db.collection('expenses').doc(id).get();
-    if (!expDoc.exists) return res.status(404).json({ error: 'Expense not found' });
-
-    const expData = expDoc.data();
-
-    // Verify user is a group member
-    const groupDoc = await db.collection('groups').doc(expData.groupId).get();
-    if (!groupDoc.exists || !groupDoc.data().members.includes(req.user.email)) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Only the payer or group creator can delete
-    const groupData = groupDoc.data();
-    const isCreator = groupData && groupData.createdBy === req.user.uid;
-    
-    if (expData.paidBy !== req.user.email && !isCreator) {
-      return res.status(403).json({ error: 'Only the expense payer or group creator can delete it' });
-    }
-
-    await db.collection('expenses').doc(id).delete();
+    const { error } = await supabase.from('expenses').delete().eq('id', req.params.id);
+    if (error) throw error;
     res.json({ message: 'Expense deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });

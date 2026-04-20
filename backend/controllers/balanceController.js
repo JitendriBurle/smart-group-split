@@ -1,92 +1,78 @@
-import admin from 'firebase-admin';
+import { supabase } from '../config/supabase.js';
 
 export const getGroupBalances = async (req, res) => {
   const { groupId } = req.params;
-  const db = admin.firestore();
 
   try {
-    const groupDoc = await db.collection('groups').doc(groupId).get();
-    if (!groupDoc.exists) return res.status(404).json({ error: 'Group not found' });
-    const group = groupDoc.data();
+    const { data: group, error: groupErr } = await supabase
+      .from('groups')
+      .select('*, group_members(email)')
+      .eq('id', groupId)
+      .single();
 
-    const expensesSnapshot = await db.collection('expenses')
-      .where('groupId', '==', groupId)
-      .get();
-    const expenses = expensesSnapshot.docs.map(doc => doc.data());
+    if (groupErr || !group) return res.status(404).json({ error: 'Group not found' });
+    const members = group.group_members.map(m => m.email);
 
-    // 1. Calculate net balances using Emails
+    const { data: expenses, error: expErr } = await supabase
+      .from('expenses')
+      .select('*, expense_splits(*)')
+      .eq('group_id', groupId);
+
+    if (expErr) throw expErr;
+
+    // 1. Calculate net balances
     const netBalances = {};
-    group.members.forEach(email => {
-      netBalances[email] = 0;
-    });
+    members.forEach(email => (netBalances[email] = 0));
 
-    expenses.forEach(expense => {
-      const payerEmail = expense.paidBy;
-      if (netBalances[payerEmail] !== undefined) {
-        netBalances[payerEmail] += expense.amount;
+    expenses.forEach(exp => {
+      const payer = exp.paid_by;
+      if (netBalances[payer] !== undefined) {
+        netBalances[payer] += parseFloat(exp.amount);
       }
-
-      // 👤 NEW: Handle Custom Splits
-      if (expense.customAmounts && Object.keys(expense.customAmounts).length > 0) {
-        Object.entries(expense.customAmounts).forEach(([email, amt]) => {
-          if (netBalances[email] !== undefined) {
-            netBalances[email] -= parseFloat(amt) || 0;
+      
+      exp.expense_splits.forEach(split => {
+        if (netBalances[split.email] !== undefined) {
+          if (split.amount !== null) {
+            netBalances[split.email] -= parseFloat(split.amount);
+          } else {
+            // Equal split
+            const share = exp.amount / (exp.expense_splits.length || 1);
+            netBalances[split.email] -= share;
           }
-        });
-      } 
-      // 👥 FALLBACK: Handle Equal Splits (legacy or default)
-      else if (expense.splitBetween && Array.isArray(expense.splitBetween)) {
-        const splitCount = expense.splitBetween.length;
-        if (splitCount > 0) {
-          const perPerson = expense.amount / splitCount;
-          expense.splitBetween.forEach(email => {
-            if (netBalances[email] !== undefined) {
-              netBalances[email] -= perPerson;
-            }
-          });
         }
-      }
+      });
     });
 
     // 2. Format result
-    const userSummary = (group.members || []).map(email => ({
+    const userSummary = members.map(email => ({
       email,
-      name: (email || '').split('@')[0] || 'User',
-      balance: netBalances[email] || 0
+      name: email.split('@')[0],
+      balance: Math.round(netBalances[email] * 100) / 100
     }));
 
-    // 3. Debt simplification (Settlements)
+    // 3. Debt simplification
     const debtors = [];
     const creditors = [];
 
     Object.entries(netBalances).forEach(([email, balance]) => {
-      if (balance < -0.01) {
-        debtors.push({ email, balance: Math.abs(balance) });
-      } else if (balance > 0.01) {
-        creditors.push({ email, balance });
-      }
+      if (balance < -0.01) debtors.push({ email, balance: Math.abs(balance) });
+      else if (balance > 0.01) creditors.push({ email, balance });
     });
 
     const settlements = [];
-    let dIdx = 0;
-    let cIdx = 0;
-
+    let dIdx = 0, cIdx = 0;
     while (dIdx < debtors.length && cIdx < creditors.length) {
-      const debtor = debtors[dIdx];
-      const creditor = creditors[cIdx];
+      const debtor = debtors[dIdx], creditor = creditors[cIdx];
       const amount = Math.min(debtor.balance, creditor.balance);
-
-      settlements.push({
-        from: debtor.email,
-        fromName: debtor.email.split('@')[0],
-        to: creditor.email,
-        toName: creditor.email.split('@')[0],
-        amount: parseFloat(amount.toFixed(2))
-      });
-
+      if (amount > 0.01) {
+        settlements.push({
+          from: debtor.email, fromName: debtor.email.split('@')[0],
+          to: creditor.email, toName: creditor.email.split('@')[0],
+          amount: parseFloat(amount.toFixed(2))
+        });
+      }
       debtor.balance -= amount;
       creditor.balance -= amount;
-
       if (debtor.balance < 0.01) dIdx++;
       if (creditor.balance < 0.01) cIdx++;
     }

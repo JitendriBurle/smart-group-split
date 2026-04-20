@@ -1,8 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { collection, query, where, onSnapshot, doc, getDoc, getDocs } from 'firebase/firestore';
-import { db } from '../firebase';
-import { expensesService } from '../services/firestoreService';
+import { supabase } from '../supabase';
+import { groupsService, expensesService } from '../services/firestoreService';
 import { categorizeExpense, getSpendingInsights } from '../services/ai';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -114,45 +113,43 @@ const GroupDetail = () => {
 
   // ── Real-time group listener ─────────────────────────────────────────────────
   useEffect(() => {
-    // Fast-path: immediate fetch
-    getDoc(doc(db, 'groups', id)).then(snap => {
-      if (snap.exists() && pageLoading) {
-        const data = { id: snap.id, ...snap.data() };
-        setGroup(data);
-        setParticipants(prev => (prev.length === 0 ? data.members : prev));
-        setPageLoading(false);
-      }
-    }).catch(() => {});
-
-    // Long-term: live listener
-    const unsub = onSnapshot(doc(db, 'groups', id), (snap) => {
-      if (!snap.exists()) { toast.error('Group not found'); return; }
-      const data = { id: snap.id, ...snap.data() };
+    setPageLoading(true);
+    const unsub = groupsService.subscribeOne(id, (data) => {
       setGroup(data);
       setParticipants(prev => (prev.length === 0 ? data.members : prev));
       setPageLoading(false);
     }, (err) => {
-      console.error(err);
-      setPageLoading(false);
+      toast.error('Circle not found');
+      navigate('/');
     });
 
     return () => unsub();
-  }, [id, pageLoading]);
+  }, [id, navigate]);
 
   // ── Real-time expenses listener ──────────────────────────────────────────────
   useEffect(() => {
-    const q = query(collection(db, 'expenses'), where('groupId', '==', id));
-    const unsub = onSnapshot(q, (snap) => {
-      const expData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      expData.sort((a, b) => {
-        const da = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
-        const db2 = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
-        return db2 - da;
-      });
-      setExpenses(expData);
-      setExpensesReady(true);
-    }, (err) => { console.error(err); toast.error('Failed to load expenses'); setExpensesReady(true); });
-    return () => unsub();
+    setExpensesLoading(true);
+    const fetchExpenses = async () => {
+       try {
+         const data = await expensesService.getByGroup(id);
+         setExpenses(data);
+         setExpensesReady(true);
+         setExpensesLoading(false);
+       } catch (err) {
+         console.error(err);
+         setExpensesReady(true);
+         setExpensesLoading(false);
+       }
+    };
+    fetchExpenses();
+
+    // Listen for changes
+    const channel = supabase
+      .channel(`expenses_${id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses', filter: `group_id=eq.${id}` }, fetchExpenses)
+      .subscribe();
+
+    return () => supabase.removeChannel(channel);
   }, [id]);
 
   // ── Recalc balances when data changes ───────────────────────────────────────

@@ -1,18 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { 
-  collection, 
-  query, 
-  where, 
-  onSnapshot, 
-  getDocs,
-  doc,
-  deleteDoc,
-  writeBatch
-} from 'firebase/firestore';
-import { db } from '../firebase';
-import { groupsService } from '../services/firestoreService';
 import { useAuth } from '../contexts/AuthContext';
+import { groupsService } from '../services/firestoreService';
 import {
   Plus, Users, ChevronRight, Wallet, TrendingUp, TrendingDown,
   X, FileText, Mail, Loader2, Pencil, Trash2
@@ -62,17 +51,16 @@ const CreateGroupModal = ({ user, onClose, onCreated }) => {
     if (!name.trim()) return toast.error('Group name required');
     
     // 1. Generate ID locally for instant UI update
-    const groupRef = doc(collection(db, "groups"));
-    const groupId = groupRef.id;
+    const groupId = crypto.randomUUID();
     const allMembers = Array.from(new Set([...memberEmails, user.email]));
 
     // 2. Clear UI fast
     setSaving(true);
     toast.success('Group created!');
-    onClose(); // Close modal immediately
+    onClose(); 
     if (onCreated) onCreated();
 
-    // 3. Save to Firestore in background
+    // 3. Save to Supabase in background
     try {
       await groupsService.createWithId(groupId, {
         name: name.trim(), 
@@ -229,45 +217,13 @@ const Dashboard = () => {
   useEffect(() => {
     if (!user?.email) return;
 
-    // Fast-path: Initial fetch to show data immediately
-    const initialFetch = async () => {
-      try {
-        const q = query(collection(db, 'groups'), where('members', 'array-contains', user.email));
-        const snap = await getDocs(q);
-        if (loading) { // Only update if Firestore snapshot hasn't beaten us
-          const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-          data.sort((a, b) => {
-            const ta = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(0);
-            const tb = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(0);
-            return tb - ta;
-          });
-          setGroups(data);
-          setLoading(false);
-        }
-      } catch (err) {
-        console.warn("Initial fetch failed, waiting for snapshot...", err);
-      }
-    };
-    initialFetch();
-
-    // Long-term: Snapshot listener for real-time updates
-    const q = query(
-      collection(db, 'groups'),
-      where('members', 'array-contains', user.email)
-    );
-
-    const unsub = onSnapshot(q, 
-      (snap) => {
-        const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        data.sort((a, b) => {
-          const ta = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(0);
-          const tb = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(0);
-          return tb - ta;
-        });
-        setGroups(data);
-        setLoading(false);
-      },
-    );
+    // Fast Initial Fetch
+    setLoading(true);
+    
+    const unsub = groupsService.subscribeAll(user.email, (data) => {
+      setGroups(data);
+      setLoading(false);
+    });
 
     return () => unsub();
   }, [user?.email]);

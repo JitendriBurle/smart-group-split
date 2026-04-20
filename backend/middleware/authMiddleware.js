@@ -1,29 +1,37 @@
-import admin from 'firebase-admin';
+import { createClient } from '@supabase/supabase-js';
+import dotenv from 'dotenv';
+dotenv.config();
+
+const supabase = createClient(
+  process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL, 
+  process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY
+);
 
 export const protect = async (req, res, next) => {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    console.warn('--- Auth Warning: No Token Provided ---');
-    console.warn('Headers received:', JSON.stringify(req.headers, null, 2));
     return res.status(401).json({ error: 'Unauthorized: No token provided' });
   }
 
   const token = authHeader.split(' ')[1];
 
   try {
-    const decodedToken = await admin.auth().verifyIdToken(token);
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    
+    if (error || !user) {
+      throw error || new Error('User not found');
+    }
+
     req.user = {
-      uid: decodedToken.uid,
-      email: decodedToken.email,
-      name: decodedToken.name || decodedToken.email.split('@')[0]
+      uid: user.id,
+      email: user.email,
+      name: user.user_metadata?.name || user.email.split('@')[0]
     };
     next();
   } catch (error) {
-    console.error('--- Firebase Token Verify Error ---');
+    console.error('--- Supabase Token Verify Error ---');
     console.error('Error Message:', error.message);
-    console.error('Expected Project ID (aud):', admin.app().options.projectId);
-    console.log('Token (start):', token.substring(0, 15) + '...');
     res.status(401).json({ error: 'Unauthorized: Invalid token', message: error.message });
   }
 };

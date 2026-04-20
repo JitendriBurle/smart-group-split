@@ -1,121 +1,143 @@
-import admin from 'firebase-admin';
+import { supabase } from '../config/supabase.js';
 
 export const createGroup = async (req, res) => {
   const { name, description, memberEmails = [] } = req.body;
-  const db = admin.firestore();
 
   try {
     if (!name) throw new Error('Group name is required');
-    if (!Array.isArray(memberEmails)) throw new Error('memberEmails must be an array');
-
-    const allMembers = Array.from(new Set([...memberEmails, req.user.email]));
     
-    console.log(`[CreateGroup] Creating "${name}" for ${req.user.email} with members:`, allMembers);
+    // 1. Create Group
+    const { data: group, error: groupErr } = await supabase
+      .from('groups')
+      .insert({
+        name,
+        description: description || '',
+        created_by: req.user.uid,
+        creator_email: req.user.email
+      })
+      .select()
+      .single();
 
-    const groupRef = await db.collection('groups').add({
-      name,
-      description: description || '',
-      members: allMembers,
-      createdBy: req.user.uid,
-      creatorEmail: req.user.email,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    if (groupErr) throw groupErr;
 
-    res.status(201).json({ id: groupRef.id, name, description, members: allMembers });
+    // 2. Add Members
+    const allMembers = Array.from(new Set([...memberEmails, req.user.email]));
+    const membersToInsert = allMembers.map(email => ({
+      group_id: group.id,
+      email
+    }));
+    await supabase.from('group_members').insert(membersToInsert);
+
+    res.status(201).json(group);
   } catch (error) {
-    console.error('[CreateGroup Error]', error.message);
     res.status(400).json({ error: error.message });
   }
 };
 
 export const getGroups = async (req, res) => {
-  const db = admin.firestore();
   try {
-    const snapshot = await db.collection('groups')
-      .where('members', 'array-contains', req.user.email)
-      .get();
+    // 1. Get IDs of groups where the user is a member
+    const { data: membership, error: membershipErr } = await supabase
+      .from('group_members')
+      .select('group_id')
+      .eq('email', req.user.email);
 
-    const groups = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    res.json(groups);
+    if (membershipErr) throw membershipErr;
+
+    const groupIds = membership?.map(m => m.group_id) || [];
+    if (groupIds.length === 0) return res.json([]);
+
+    // 2. Get those groups with ALL members
+    const { data, error } = await supabase
+      .from('groups')
+      .select('*, group_members(email)')
+      .in('id', groupIds);
+
+    if (error) throw error;
+
+    const formattedData = (data || []).map(group => ({
+      ...group,
+      members: group.group_members?.map(m => m.email) || [],
+      createdBy: group.created_by,
+      creatorEmail: group.creator_email
+    }));
+
+    res.json(formattedData);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
 export const getGroupDetails = async (req, res) => {
-  const db = admin.firestore();
   try {
-    const doc = await db.collection('groups').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Group not found' });
+    const { data, error } = await supabase
+      .from('groups')
+      .select('*, group_members(email)')
+      .eq('id', req.params.id)
+      .single();
+
+    if (error) throw error;
     
-    const groupData = doc.data();
-    if (!groupData.members || !Array.isArray(groupData.members)) {
-      return res.status(403).json({ error: 'Group data is malformed' });
-    }
-    
-    if (!groupData.members.includes(req.user.email)) {
+    const members = data.group_members.map(m => m.email);
+    if (!members.includes(req.user.email)) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    res.json({ id: doc.id, ...groupData });
+    res.json({ 
+      ...data, 
+      members,
+      createdBy: data.created_by,
+      creatorEmail: data.creator_email
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
-// ── UPDATE GROUP ─────────────────────────────────────────────────────────────
 export const updateGroup = async (req, res) => {
   const { id } = req.params;
   const { name, description, memberEmails } = req.body;
-  const db = admin.firestore();
 
   try {
-    const groupDoc = await db.collection('groups').doc(id).get();
-    if (!groupDoc.exists) return res.status(404).json({ error: 'Group not found' });
+    // Check ownership
+    const { data: group, error: fetchErr } = await supabase.from('groups').select('*').eq('id', id).single();
+    if (fetchErr || !group) return res.status(404).json({ error: 'Group not found' });
+    if (group.created_by !== req.user.uid) return res.status(403).json({ error: 'Access denied' });
 
-    const groupData = groupDoc.data();
-    // Only the creator can update the group
-    if (groupData.createdBy !== req.user.uid) {
-      return res.status(403).json({ error: 'Only the group creator can edit this group' });
+    const { data, error } = await supabase
+      .from('groups')
+      .update({ name, description })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    if (memberEmails) {
+      await supabase.from('group_members').delete().eq('group_id', id);
+      const allMembers = Array.from(new Set([...memberEmails, group.creator_email]));
+      await supabase.from('group_members').insert(allMembers.map(email => ({ group_id: id, email })));
     }
 
-    const allMembers = Array.from(new Set([...(memberEmails || groupData.members), groupData.creatorEmail]));
-
-    await db.collection('groups').doc(id).update({
-      name: name || groupData.name,
-      description: description ?? groupData.description,
-      members: allMembers,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    res.json({ id, name, description, members: allMembers });
+    res.json(data);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
-// ── DELETE GROUP ─────────────────────────────────────────────────────────────
 export const deleteGroup = async (req, res) => {
   const { id } = req.params;
-  const db = admin.firestore();
-
   try {
-    const groupDoc = await db.collection('groups').doc(id).get();
-    if (!groupDoc.exists) return res.status(404).json({ error: 'Group not found' });
+    // Check ownership
+    const { data: group, error: fetchErr } = await supabase.from('groups').select('*').eq('id', id).single();
+    if (fetchErr || !group) return res.status(404).json({ error: 'Group not found' });
+    if (group.created_by !== req.user.uid) return res.status(403).json({ error: 'Access denied' });
 
-    const groupData = groupDoc.data();
-    if (groupData.createdBy !== req.user.uid) {
-      return res.status(403).json({ error: 'Only the group creator can delete this group' });
-    }
+    // Supabase RLS/FK Cascade will handle expenses if set up correctly, 
+    // but we can also manually delete to be sure.
+    await supabase.from('groups').delete().eq('id', id);
 
-    // Cascade delete all expenses belonging to this group
-    const expensesSnap = await db.collection('expenses').where('groupId', '==', id).get();
-    const batch = db.batch();
-    expensesSnap.docs.forEach(doc => batch.delete(doc.ref));
-    batch.delete(db.collection('groups').doc(id));
-    await batch.commit();
-
-    res.json({ message: 'Group and all its expenses deleted successfully' });
+    res.json({ message: 'Group deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

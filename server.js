@@ -1,22 +1,14 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import admin from 'firebase-admin';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 dotenv.config();
 
-// Ensure project ID is set for Admin SDK IMMEDIATELY
-if (!process.env.GOOGLE_CLOUD_PROJECT && process.env.VITE_FIREBASE_PROJECT_ID) {
-  process.env.GOOGLE_CLOUD_PROJECT = process.env.VITE_FIREBASE_PROJECT_ID;
-}
-
-if (!admin.apps.length) {
-  admin.initializeApp({
-    projectId: process.env.VITE_FIREBASE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT
-  });
-  console.log('Firebase Admin Initialized for Project:', process.env.VITE_FIREBASE_PROJECT_ID);
+// Ensure Supabase creds exist
+if (!process.env.VITE_SUPABASE_URL && !process.env.SUPABASE_URL) {
+  console.warn('CRITICAL: Supabase environment variables are missing!');
 }
 
 // Routes must be imported AFTER Admin is initialized
@@ -64,5 +56,5 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`SmartSplit Firebase Backend running on port ${PORT}`);
+  console.log(`SmartSplit Supabase Backend running on port ${PORT}`);
 });
