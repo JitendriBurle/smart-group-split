@@ -36,9 +36,7 @@ export default defineConfig({
       'react',
       'react-dom',
       'react-router-dom',
-      'firebase/app',
-      'firebase/auth',
-      'firebase/firestore',
+      '@supabase/supabase-js',
       'axios',
       'lucide-react',
       'react-hot-toast',
@@ -58,7 +56,7 @@ export default defineConfig({
         // the app chunk, not the large vendor libs.
         manualChunks: {
           'vendor-react':    ['react', 'react-dom', 'react-router-dom'],
-          'vendor-firebase': ['firebase/app', 'firebase/auth', 'firebase/firestore'],
+          'vendor-supabase': ['@supabase/supabase-js'],
           'vendor-ui':       ['lucide-react', 'react-hot-toast', 'axios'],
         },
       },
