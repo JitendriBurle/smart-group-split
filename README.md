@@ -11,7 +11,7 @@ SmartSplit is a high-performance, real-time web application designed to eliminat
 - **Real-Time Group Management**: Create circles and invite friends via email.
 - **Equal & Custom Splits**: Track bills split evenly or with precise custom amounts for every participant.
 - **Debt Simplification**: Advanced greedy algorithm minimizes the total number of transactions needed to settle up.
-- **Live Balances**: Instant balance re-computation powered by Firestore real-time listeners.
+- **Live Balances**: Instant balance re-computation powered by Supabase real-time listeners.
 
 ### 🤖 AI Capabilities
 - **Smart Categorization**: Automatically tags your expenses (Food, Travel, Rent, etc.) using Gemini 1.5 Pro/Flash to keep your history clean.
@@ -30,8 +30,8 @@ SmartSplit is a high-performance, real-time web application designed to eliminat
 SmartSplit uses a modern **Full-stack Node.js + React** architecture with a real-time data layer:
 
 - **Frontend**: React (Vite) + Tailwind CSS v4 + Lucide Icons.
-- **State & Auth**: Firebase Authentication & Context API.
-- **Data Layer**: Cloud Firestore (Real-time `onSnapshot` listeners).
+- **State & Auth**: Supabase Auth & Context API.
+- **Data Layer**: Supabase (Postgres with Realtime "postgres_changes" listeners).
 - **Backend API**: Node.js / Express — All mutations flow through an authenticated backend for business logic enforcement and server-side authorization.
 - **AI Engine**: Google Gemini API for categorization and spending pattern analysis.
 
@@ -41,38 +41,42 @@ SmartSplit uses a modern **Full-stack Node.js + React** architecture with a real
 
 ### 1. Prerequisites
 - Node.js 18+
-- A Firebase Project (with Auth and Firestore enabled)
+- A Supabase Project (Database + Auth enabled)
 - A Gemini API Key (for AI features)
 
 ### 2. Environment Setup
 Create a `.env` in the root directory:
 ```env
 # Frontend (Vite)
-VITE_FIREBASE_API_KEY=your_key
-VITE_FIREBASE_AUTH_DOMAIN=your_domain
-VITE_FIREBASE_PROJECT_ID=your_id
-VITE_FIREBASE_STORAGE_BUCKET=your_bucket
-VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
-VITE_FIREBASE_APP_ID=your_app_id
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-key
 
 # Backend (Express)
 PORT=5001
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 GEMINI_API_KEY=your_gemini_key
 ```
 
-### 3. Installation
+### 3. Database Setup (Supabase SQL Editor)
+Run the following structure in your Supabase SQL Editor:
+- Enable **Realtime** for `groups` and `expenses` tables.
+- Standard PostgreSQL setup for `profiles`, `groups`, `group_members`, `expenses`, and `expense_splits`.
+- Set up Row Level Security (RLS) to ensure data privacy.
+
+### 4. Installation
 ```powershell
 npm install
 ```
 
-### 4. Run Development
+### 5. Run Development
 ```powershell
 # Run both servers
 npm run dev    # Starts Vite on :5173
 node server.js # Starts Backend on :5001
 ```
 
-### 5. Production Build
+### 6. Production Build
 ```powershell
 npm run build
 $env:NODE_ENV='production'; node server.js
@@ -81,9 +85,9 @@ $env:NODE_ENV='production'; node server.js
 ---
 
 ## 🛠️ Implementation Details
-- **Balance Calculation**: Client-side re-computation on every Firestore update ensures the UI is never stale.
+- **Balance Calculation**: Client-side re-computation on every database update ensures the UI is never stale.
 - **Optimistic UI**: Modals close and toasts show immediately, while backend writes happen in the background.
-- **Auth Guarding**: Custom `ProtectedRoute` component ensures zero access to group data without a valid session.
+- **Auth Guarding**: Custom `ProtectedRoute` component ensures zero access to group data without a valid session via Supabase JWT.
 
 ---
 
