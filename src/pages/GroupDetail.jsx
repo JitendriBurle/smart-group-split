@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../supabase';
 import { groupsService, expensesService } from '../services/firestoreService';
 import { categorizeExpense, getSpendingInsights } from '../services/ai';
@@ -36,10 +36,12 @@ const CategoryBadge = ({ cat }) => {
 const GroupDetail = () => {
   const { id } = useParams();
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [group, setGroup]                 = useState(null);
   const [expenses, setExpenses]           = useState([]);
   const [balances, setBalances]           = useState({ userSummary: [], settlements: [] });
-  const [groupLoading, setGroupLoading]   = useState(true);
+  const [pageLoading, setPageLoading]     = useState(true);
+  const [expensesLoading, setExpensesLoading] = useState(true);
   const [expensesReady, setExpensesReady] = useState(false);
   const [showAddExpense, setShowAddExpense] = useState(false);
 
@@ -188,8 +190,7 @@ const GroupDetail = () => {
     const categoryPromise = categorizeExpense(description);
 
     // 1. Generate local ID for instant save
-    const expenseRef = doc(collection(db, "expenses"));
-    const expenseId = expenseRef.id;
+    const expenseId = crypto.randomUUID();
 
     const expensePayload = {
       description: description.trim(),
@@ -430,7 +431,7 @@ const GroupDetail = () => {
   );
 
   // ── Loading skeleton ──────────────────────────────────────────────────────────
-  if (groupLoading) return (
+  if (pageLoading) return (
     <div className="space-y-6 sm:space-y-8 animate-fade-in pb-20">
       <div className="h-6 w-36 bg-gray-100 rounded-xl animate-pulse" />
       <div className="bg-white p-5 sm:p-10 rounded-[24px] sm:rounded-[40px] shadow-sm border border-gray-100 animate-pulse space-y-4">
@@ -497,7 +498,7 @@ const GroupDetail = () => {
           </div>
         </div>
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-          {group.createdBy === user.uid && (
+          {group.createdBy === user.id && (
             <Link
               to={`/group/${id}/edit`}
               className="border-2 border-gray-200 hover:border-indigo-300 text-gray-600 hover:text-indigo-600 px-5 py-3 sm:py-4 rounded-2xl font-black flex items-center justify-center gap-2 transition-all active:scale-95 text-sm sm:text-base"
@@ -583,7 +584,7 @@ const GroupDetail = () => {
                           {(expense.splitBetween || []).length} participants
                         </p>
                       </div>
-                      {(expense.paidBy === user.email || group.createdBy === user.uid) && (
+                      {(expense.paidBy === user.email || group.createdBy === user.id) && (
                         <div className="flex gap-1 sm:gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity duration-200">
                           {expense.paidBy === user.email && (
                             <button onClick={() => openEditExpense(expense)} title="Edit expense"

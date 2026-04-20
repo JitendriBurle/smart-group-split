@@ -36,7 +36,7 @@ const EditGroup = () => {
       (groupData) => {
         clearTimeout(loadTimeout);
         // Permission: only creator can edit
-        if (groupData.createdBy !== user.uid) {
+        if (groupData.createdBy !== user.id) {
           toast.error('Only the group creator can edit this group');
           navigate(`/group/${id}`);
           return;
@@ -60,7 +60,7 @@ const EditGroup = () => {
       clearTimeout(loadTimeout);
       unsub();
     };
-  }, [id, user.uid, navigate]);
+  }, [id, user.id, navigate]);
 
   const addMember = () => {
     if (!memberEmail) return;

@@ -67,7 +67,7 @@ const CreateGroupModal = ({ user, onClose, onCreated }) => {
         description, 
         memberEmails: allMembers,
         userEmail: user.email, 
-        userId: user.uid,
+        userId: user.id,
       });
     } catch (err) {
       console.error("Background create failed:", err);
@@ -372,7 +372,7 @@ const Dashboard = () => {
                 </Link>
 
                 {/* Action buttons — visible only to creator */}
-                {group.createdBy === user?.uid && (
+                {group.createdBy === user?.id && (
                   <div className="absolute top-3 right-3 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-20">
                     <Link
                       to={`/group/${group.id}/edit`}

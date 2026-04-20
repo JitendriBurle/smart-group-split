@@ -17,7 +17,10 @@ export const groupsService = {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.error("Supabase Group Create Error:", error);
+      throw error;
+    }
 
     // 2. Add Members
     const membersToInsert = allEmails.map(email => ({
@@ -44,7 +47,10 @@ export const groupsService = {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.error("Supabase Group CreateWithId Error:", error);
+      throw error;
+    }
 
     const membersToInsert = allEmails.map(email => ({
       group_id: group.id,
@@ -62,7 +68,10 @@ export const groupsService = {
       .eq('id', id)
       .single();
     
-    if (error) throw error;
+    if (error) {
+      console.error("Supabase Group GetById Error:", error);
+      throw error;
+    }
     // Format to match old structure
     return { 
       ...group, 
