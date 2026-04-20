@@ -20,20 +20,38 @@ import { groupService, expenseService } from './api';
 // Real-time reads stay on the Firestore SDK directly (IndexedDB cache + live push).
 
 export const groupsService = {
-  // POST /api/groups — creates group, enforces server-side auth
   create: async ({ name, description, memberEmails, userEmail, userId }) => {
-    const res = await groupService.create({ name, description, memberEmails, userEmail, userId });
-    return res.data;
+    const allMembers = Array.from(new Set([...(memberEmails || []), userEmail]));
+    const docRef = await addDoc(collection(db, 'groups'), {
+      name,
+      description: description || '',
+      members: allMembers,
+      createdBy: userId,
+      creatorEmail: userEmail,
+      createdAt: serverTimestamp(),
+    });
+    return { id: docRef.id, name, members: allMembers };
   },
 
-  // Client-side real-time read — still used by EditGroup for a single doc
+  createWithId: async (id, { name, description, memberEmails, userEmail, userId }) => {
+    const allMembers = Array.from(new Set([...(memberEmails || []), userEmail]));
+    await setDoc(doc(db, 'groups', id), {
+      name,
+      description: description || '',
+      members: allMembers,
+      createdBy: userId,
+      creatorEmail: userEmail,
+      createdAt: serverTimestamp(),
+    });
+    return { id, name, members: allMembers };
+  },
+
   getById: async (id) => {
     const snap = await getDoc(doc(db, 'groups', id));
     if (!snap.exists()) throw new Error('Group not found');
     return { id: snap.id, ...snap.data() };
   },
 
-  // Firestore onSnapshot helper — used by Dashboard and GroupDetail
   subscribeAll: (userEmail, onData, onError) => {
     const q = query(
       collection(db, 'groups'),
@@ -51,36 +69,56 @@ export const groupsService = {
       onData({ id: snap.id, ...snap.data() });
     }, onError),
 
-  // PUT /api/groups/:id — only creator can update (enforced on backend)
   update: async (id, { name, description, memberEmails, creatorEmail }) => {
-    const res = await groupService.update(id, { name, description, memberEmails, creatorEmail });
-    return res.data;
+    const allMembers = Array.from(new Set([...(memberEmails || []), creatorEmail]));
+    await updateDoc(doc(db, 'groups', id), {
+      name,
+      description,
+      members: allMembers,
+      updatedAt: serverTimestamp(),
+    });
+    return { id, name, members: allMembers };
   },
 
-  // DELETE /api/groups/:id — cascade-deletes expenses, only creator can delete
   delete: async (id) => {
-    await groupService.delete(id);
+    // Delete expenses first (batch)
+    const q = query(collection(db, 'expenses'), where('groupId', '==', id));
+    const snap = await getDocs(q);
+    const batch = writeBatch(db);
+    snap.docs.forEach(d => batch.delete(d.ref));
+    batch.delete(doc(db, 'groups', id));
+    await batch.commit();
   },
 };
 
-// ── EXPENSES ─────────────────────────────────────────────────────────────────
-// Same pattern: mutations via backend API, reads via Firestore SDK.
-
 export const expensesService = {
   add: async ({ description, amount, groupId, paidBy, splitBetween, category, customAmounts }) => {
-    const res = await expenseService.add({
-      description, amount, groupId, paidBy, splitBetween,
-      ...(category     ? { category }     : {}),
+    const expenseData = {
+      description,
+      amount: parseFloat(amount),
+      groupId,
+      paidBy,
+      splitBetween,
+      createdAt: serverTimestamp(),
+      ...(category ? { category } : {}),
       ...(customAmounts && Object.keys(customAmounts).length > 0 ? { customAmounts } : {}),
-    });
-    return res.data;
+    };
+    const docRef = await addDoc(collection(db, 'expenses'), expenseData);
+    return { id: docRef.id, ...expenseData };
+  },
+
+  addWithId: async (id, data) => {
+    const expenseData = {
+      ...data,
+      amount: parseFloat(data.amount),
+      createdAt: serverTimestamp(),
+    };
+    await setDoc(doc(db, 'expenses', id), expenseData);
+    return { id, ...expenseData };
   },
 
   getByGroup: async (groupId) => {
-    const q = query(
-      collection(db, 'expenses'),
-      where('groupId', '==', groupId)
-    );
+    const q = query(collection(db, 'expenses'), where('groupId', '==', groupId));
     const snap = await getDocs(q);
     const expenses = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     return expenses.sort((a, b) => {
@@ -90,18 +128,17 @@ export const expensesService = {
     });
   },
 
-  // PUT /api/expenses/:id — only payer can edit (enforced on backend)
-  update: async (id, { description, amount, splitBetween, customAmounts }) => {
-    const res = await expenseService.update(id, {
-      description, amount, splitBetween,
-      ...(customAmounts !== undefined ? { customAmounts } : {}),
-    });
-    return res.data;
+  update: async (id, payload) => {
+    const updates = {
+      ...payload,
+      updatedAt: serverTimestamp(),
+    };
+    await updateDoc(doc(db, 'expenses', id), updates);
+    return { id, ...updates };
   },
 
-  // DELETE /api/expenses/:id — payer or group creator (enforced on backend)
   delete: async (id) => {
-    await expenseService.delete(id);
+    await deleteDoc(doc(db, 'expenses', id));
   },
 };
 
@@ -123,10 +160,19 @@ export const balancesService = {
       if (balanceMap[exp.paidBy] !== undefined) {
         balanceMap[exp.paidBy] += exp.amount;
       }
-      const share = exp.amount / (exp.splitBetween?.length || 1);
-      (exp.splitBetween || []).forEach(email => {
-        if (balanceMap[email] !== undefined) balanceMap[email] -= share;
-      });
+      
+      if (exp.customAmounts && Object.keys(exp.customAmounts).length > 0) {
+        // Custom split: subtract specific amounts
+        Object.entries(exp.customAmounts).forEach(([email, amt]) => {
+          if (balanceMap[email] !== undefined) balanceMap[email] -= parseFloat(amt) || 0;
+        });
+      } else {
+        // Equal split: subtract share
+        const share = exp.amount / (exp.splitBetween?.length || 1);
+        (exp.splitBetween || []).forEach(email => {
+          if (balanceMap[email] !== undefined) balanceMap[email] -= share;
+        });
+      }
     });
 
     const userSummary = group.members.map(email => ({

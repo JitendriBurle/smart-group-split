@@ -26,21 +26,33 @@ export const getGroupBalances = async (req, res) => {
         netBalances[payerEmail] += expense.amount;
       }
 
-      const splitCount = expense.splitBetween.length;
-      const perPerson = expense.amount / splitCount;
-
-      expense.splitBetween.forEach(email => {
-        if (netBalances[email] !== undefined) {
-          netBalances[email] -= perPerson;
+      // 👤 NEW: Handle Custom Splits
+      if (expense.customAmounts && Object.keys(expense.customAmounts).length > 0) {
+        Object.entries(expense.customAmounts).forEach(([email, amt]) => {
+          if (netBalances[email] !== undefined) {
+            netBalances[email] -= parseFloat(amt) || 0;
+          }
+        });
+      } 
+      // 👥 FALLBACK: Handle Equal Splits (legacy or default)
+      else if (expense.splitBetween && Array.isArray(expense.splitBetween)) {
+        const splitCount = expense.splitBetween.length;
+        if (splitCount > 0) {
+          const perPerson = expense.amount / splitCount;
+          expense.splitBetween.forEach(email => {
+            if (netBalances[email] !== undefined) {
+              netBalances[email] -= perPerson;
+            }
+          });
         }
-      });
+      }
     });
 
     // 2. Format result
-    const userSummary = group.members.map(email => ({
+    const userSummary = (group.members || []).map(email => ({
       email,
-      name: email.split('@')[0],
-      balance: netBalances[email]
+      name: (email || '').split('@')[0] || 'User',
+      balance: netBalances[email] || 0
     }));
 
     // 3. Debt simplification (Settlements)

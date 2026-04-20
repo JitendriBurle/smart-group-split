@@ -203,16 +203,40 @@ const Dashboard = () => {
   const [showCreate, setShowCreate]       = useState(false);
   const [deleteTarget, setDeleteTarget]   = useState(null); // group object
   const { user, userProfile }             = useAuth();
-  const userEmail                         = user?.email;
 
   useEffect(() => {
-    if (!userEmail) { setLoading(false); return; }
+    if (!user?.email) return;
 
-    const q = query(collection(db, 'groups'), where('members', 'array-contains', userEmail));
-    const unsub = onSnapshot(q,
+    // Fast-path: Initial fetch to show data immediately
+    const initialFetch = async () => {
+      try {
+        const q = query(collection(db, 'groups'), where('members', 'array-contains', user.email));
+        const snap = await getDocs(q);
+        if (loading) { // Only update if Firestore snapshot hasn't beaten us
+          const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          data.sort((a, b) => {
+            const ta = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(0);
+            const tb = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(0);
+            return tb - ta;
+          });
+          setGroups(data);
+          setLoading(false);
+        }
+      } catch (err) {
+        console.warn("Initial fetch failed, waiting for snapshot...", err);
+      }
+    };
+    initialFetch();
+
+    // Long-term: Snapshot listener for real-time updates
+    const q = query(
+      collection(db, 'groups'),
+      where('members', 'array-contains', user.email)
+    );
+
+    const unsub = onSnapshot(q, 
       (snap) => {
-        const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        // Sort: newest first
+        const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         data.sort((a, b) => {
           const ta = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(0);
           const tb = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(0);
@@ -221,10 +245,10 @@ const Dashboard = () => {
         setGroups(data);
         setLoading(false);
       },
-      () => { toast.error('Failed to load groups'); setLoading(false); }
     );
+
     return () => unsub();
-  }, [userEmail]);
+  }, [user?.email]);
 
   // ── Skeleton ────────────────────────────────────────────────────────────────
   if (loading) return (

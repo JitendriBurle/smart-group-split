@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { groupsService } from '../services/firestoreService';
+import { db } from '../firebase';
+import { collection, doc } from 'firebase/firestore';
 import toast from 'react-hot-toast';
 import { Users, Plus, X, Save, FileText, Loader2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -37,18 +39,27 @@ const CreateGroup = () => {
     if (!name.trim()) return toast.error('Group name required');
     setSaving(true);
     try {
-      await groupsService.create({
+      // 1. Generate ID locally for instant navigation
+      const groupRef = doc(collection(db, "groups"));
+      const groupId = groupRef.id;
+
+      const allMembers = Array.from(new Set([...memberEmails, user.email]));
+
+      // 2. Clear UI fast
+      setSaving(true);
+      toast.success('New circle created!');
+      navigate(`/group/${groupId}`); // Navigate immediately
+
+      // 3. Save to Firestore in background
+      await groupsService.createWithId(groupId, {
         name: name.trim(),
         description,
-        memberEmails,
+        memberEmails: allMembers,
         userEmail: user.email,
         userId: user.uid,
       });
-      toast.success('New circle created!');
-      navigate('/');
     } catch (err) {
       toast.error(err.message || 'Failed to create group');
-    } finally {
       setSaving(false);
     }
   };

@@ -1,15 +1,20 @@
 import admin from 'firebase-admin';
 
 export const createGroup = async (req, res) => {
-  const { name, description, memberEmails } = req.body;
+  const { name, description, memberEmails = [] } = req.body;
   const db = admin.firestore();
 
   try {
+    if (!name) throw new Error('Group name is required');
+    if (!Array.isArray(memberEmails)) throw new Error('memberEmails must be an array');
+
     const allMembers = Array.from(new Set([...memberEmails, req.user.email]));
     
+    console.log(`[CreateGroup] Creating "${name}" for ${req.user.email} with members:`, allMembers);
+
     const groupRef = await db.collection('groups').add({
       name,
-      description,
+      description: description || '',
       members: allMembers,
       createdBy: req.user.uid,
       creatorEmail: req.user.email,
@@ -18,6 +23,7 @@ export const createGroup = async (req, res) => {
 
     res.status(201).json({ id: groupRef.id, name, description, members: allMembers });
   } catch (error) {
+    console.error('[CreateGroup Error]', error.message);
     res.status(400).json({ error: error.message });
   }
 };
@@ -43,6 +49,10 @@ export const getGroupDetails = async (req, res) => {
     if (!doc.exists) return res.status(404).json({ error: 'Group not found' });
     
     const groupData = doc.data();
+    if (!groupData.members || !Array.isArray(groupData.members)) {
+      return res.status(403).json({ error: 'Group data is malformed' });
+    }
+    
     if (!groupData.members.includes(req.user.email)) {
       return res.status(403).json({ error: 'Access denied' });
     }

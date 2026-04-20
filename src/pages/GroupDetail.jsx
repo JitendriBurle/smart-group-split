@@ -114,15 +114,30 @@ const GroupDetail = () => {
 
   // ── Real-time group listener ─────────────────────────────────────────────────
   useEffect(() => {
+    // Fast-path: immediate fetch
+    getDoc(doc(db, 'groups', id)).then(snap => {
+      if (snap.exists() && pageLoading) {
+        const data = { id: snap.id, ...snap.data() };
+        setGroup(data);
+        setParticipants(prev => (prev.length === 0 ? data.members : prev));
+        setPageLoading(false);
+      }
+    }).catch(() => {});
+
+    // Long-term: live listener
     const unsub = onSnapshot(doc(db, 'groups', id), (snap) => {
-      if (!snap.exists()) { toast.error('Group not found'); setGroupLoading(false); return; }
-      const groupData = { id: snap.id, ...snap.data() };
-      setGroup(groupData);
-      setParticipants(prev => (prev.length === 0 ? groupData.members : prev));
-      setGroupLoading(false);
-    }, (err) => { console.error(err); toast.error('Failed to load group'); setGroupLoading(false); });
+      if (!snap.exists()) { toast.error('Group not found'); return; }
+      const data = { id: snap.id, ...snap.data() };
+      setGroup(data);
+      setParticipants(prev => (prev.length === 0 ? data.members : prev));
+      setPageLoading(false);
+    }, (err) => {
+      console.error(err);
+      setPageLoading(false);
+    });
+
     return () => unsub();
-  }, [id]);
+  }, [id, pageLoading]);
 
   // ── Real-time expenses listener ──────────────────────────────────────────────
   useEffect(() => {
@@ -172,9 +187,12 @@ const GroupDetail = () => {
       }
     }
 
-    setSubmitting(true);
     // AI categorise (non-blocking — runs in background after submit)
     const categoryPromise = categorizeExpense(description);
+
+    // 1. Generate local ID for instant save
+    const expenseRef = doc(collection(db, "expenses"));
+    const expenseId = expenseRef.id;
 
     const expensePayload = {
       description: description.trim(),
@@ -182,24 +200,30 @@ const GroupDetail = () => {
       groupId: id,
       paidBy: user.email,
       splitBetween: participants,
+      category: 'Other', // temporary placeholder
       ...(splitMode === 'custom' ? { customAmounts } : {}),
     };
 
-    // Close modal immediately
+    // Close modal & Notify immediately
     setShowAddExpense(false);
+    toast.success('Expense added!');
     setDescription(''); setAmount('');
     setParticipants(group?.members || []);
     setSplitMode('equal'); setCustomAmounts({});
     setSubmitting(false);
-    toast.success('Expense added!');
 
-    // Attach category from AI then save
-    try {
-      const category = await categoryPromise;
-      await expensesService.add({ ...expensePayload, category });
-    } catch (error) {
-      toast.error('Failed to save expense: ' + (error.message || 'Please try again'));
-    }
+    // 2. Perform Save & AI Update in background
+    (async () => {
+      try {
+        await expensesService.addWithId(expenseId, expensePayload);
+        const aiCategory = await categoryPromise;
+        if (aiCategory && aiCategory !== 'Other') {
+          await expensesService.update(expenseId, { category: aiCategory });
+        }
+      } catch (error) {
+        console.error("Background save/AI failed:", error);
+      }
+    })();
   };
 
   // ── Edit Expense ─────────────────────────────────────────────────────────────
@@ -232,10 +256,26 @@ const GroupDetail = () => {
       splitBetween: editParticipants,
       ...(editSplitMode === 'custom' ? { customAmounts: editCustomAmounts } : { customAmounts: {} }),
     };
+
     const expId = editingExpense.id;
+    const oldDesc = editingExpense.description;
+    
     setEditingExpense(null);
     toast.success('Expense updated!');
-    expensesService.update(expId, payload).catch(err => toast.error('Update failed: ' + err.message));
+
+    // Only re-categorize if description changed
+    const runUpdate = async () => {
+      let finalPayload = { ...payload };
+      if (payload.description !== oldDesc) {
+        try {
+          const category = await categorizeExpense(payload.description);
+          finalPayload.category = category;
+        } catch (e) { console.error('AI Edit Error:', e); }
+      }
+      await expensesService.update(expId, finalPayload);
+    };
+
+    runUpdate().catch(err => toast.error('Update failed: ' + err.message));
   };
 
   const handleDeleteExpense = (expId) => {

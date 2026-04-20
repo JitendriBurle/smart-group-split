@@ -8,15 +8,8 @@ dotenv.config();
  * to point to a service account JSON file.
  * Fallback: admin.initializeApp() will try to find credentials automatically.
  */
-if (!admin.apps.length) {
-  try {
-    admin.initializeApp();
-    console.log('Firebase Admin Initialized');
-  } catch (error) {
-    console.error('Firebase Admin Initialization Error:', error.message);
-  }
-}
-
+// Firebase Admin is initialized centrally in server.js
+// to ensure consistency and correct project ID handling.
 const db = admin.firestore();
 const auth = admin.auth();
 

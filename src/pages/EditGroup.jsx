@@ -20,9 +20,21 @@ const EditGroup = () => {
 
   // Real-time group listener — same pattern as GroupDetail
   useEffect(() => {
+    // Safety: 5s timeout
+    const loadTimeout = setTimeout(() => {
+      setPageLoading(prev => {
+        if (prev) {
+          console.warn("Edit group loading timeout...");
+          return false;
+        }
+        return prev;
+      });
+    }, 5000);
+
     const unsub = groupsService.subscribeOne(
       id,
       (groupData) => {
+        clearTimeout(loadTimeout);
         // Permission: only creator can edit
         if (groupData.createdBy !== user.uid) {
           toast.error('Only the group creator can edit this group');
@@ -39,11 +51,15 @@ const EditGroup = () => {
         setPageLoading(false);
       },
       (err) => {
+        clearTimeout(loadTimeout);
         toast.error('Failed to load group');
         navigate('/');
       }
     );
-    return () => unsub();
+    return () => {
+      clearTimeout(loadTimeout);
+      unsub();
+    };
   }, [id, user.uid, navigate]);
 
   const addMember = () => {

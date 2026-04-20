@@ -95,7 +95,9 @@ export const deleteExpense = async (req, res) => {
     }
 
     // Only the payer or group creator can delete
-    const isCreator = groupDoc.data().createdBy === req.user.uid;
+    const groupData = groupDoc.data();
+    const isCreator = groupData && groupData.createdBy === req.user.uid;
+    
     if (expData.paidBy !== req.user.email && !isCreator) {
       return res.status(403).json({ error: 'Only the expense payer or group creator can delete it' });
     }
