@@ -17,6 +17,13 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
+// Diagnostic: Log config presence (first 5 chars only for security)
+if (!import.meta.env.VITE_FIREBASE_API_KEY) {
+  console.error("CRITICAL: VITE_FIREBASE_API_KEY is missing from environment!");
+} else {
+  console.log("Firebase config detected for project:", import.meta.env.VITE_FIREBASE_PROJECT_ID);
+}
+
 // Singleton pattern for Firebase App
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 const auth = getAuth(app);

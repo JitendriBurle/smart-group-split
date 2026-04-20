@@ -1,6 +1,15 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { 
+  collection, 
+  query, 
+  where, 
+  onSnapshot, 
+  getDocs,
+  doc,
+  deleteDoc,
+  writeBatch
+} from 'firebase/firestore';
 import { db } from '../firebase';
 import { groupsService } from '../services/firestoreService';
 import { useAuth } from '../contexts/AuthContext';
@@ -51,17 +60,30 @@ const CreateGroupModal = ({ user, onClose, onCreated }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!name.trim()) return toast.error('Group name required');
+    
+    // 1. Generate ID locally for instant UI update
+    const groupRef = doc(collection(db, "groups"));
+    const groupId = groupRef.id;
+    const allMembers = Array.from(new Set([...memberEmails, user.email]));
+
+    // 2. Clear UI fast
     setSaving(true);
+    toast.success('Group created!');
+    onClose(); // Close modal immediately
+    if (onCreated) onCreated();
+
+    // 3. Save to Firestore in background
     try {
-      await groupsService.create({
-        name: name.trim(), description, memberEmails,
-        userEmail: user.email, userId: user.uid,
+      await groupsService.createWithId(groupId, {
+        name: name.trim(), 
+        description, 
+        memberEmails: allMembers,
+        userEmail: user.email, 
+        userId: user.uid,
       });
-      toast.success('Group created!');
-      onCreated();
-      onClose();
     } catch (err) {
-      toast.error(err.message || 'Failed to create group');
+      console.error("Background create failed:", err);
+      toast.error('Sync failed, but check your dashboard in a moment.');
     } finally {
       setSaving(false);
     }
